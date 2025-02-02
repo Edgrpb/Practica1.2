@@ -1,0 +1,124 @@
+pipeline {
+    agent none
+
+    stages {
+        stage('Get Code') {
+            agent { label 'windows-agent' }
+            steps {
+                echo "Clonando el repositorio..."
+                git branch: 'main', url: 'https://github.com/Edgrpb/Practica1.2.git'
+                bat 'dir'
+                echo "WORKSPACE: ${WORKSPACE}"
+                bat 'whoami'
+                bat 'hostname'
+
+                // Guardamos el código para compartir con Linux
+                stash name: 'source-code', includes: '**'
+            }
+        }
+
+        stage('Parallel Tests') {
+            parallel {
+                stage('Unit') {
+                    agent { label 'linux-agent' }
+                    steps {
+                        unstash 'source-code'
+                        echo "WORKSPACE: ${WORKSPACE}"
+                        sh 'whoami'
+                        sh 'hostname'
+                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                            sh 'pytest --junitxml=resultado-Unit.xml test/unit'
+                        }
+                        junit 'resultado-Unit.xml'
+                    }
+                }
+
+                stage('Static') {
+                    agent { label 'linux-agent' }
+                    steps {
+                        unstash 'source-code'
+                        echo "WORKSPACE: ${WORKSPACE}"
+                        sh 'whoami'
+                        sh 'hostname'
+                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                            sh 'python3 -m flake8 --exit-zero --format=pylint app >flake8.out'
+                        }
+                        recordIssues tools: [flake8(name: 'flake8', pattern: 'flake8.out')], 
+                            qualityGates: [[threshold: 8, type: 'TOTAL', unstable: true], 
+                                           [threshold: 10, type: 'TOTAL', unstable: false]]
+                    }
+                }
+
+                stage('Security') {
+                    agent { label 'linux-agent' }
+                    steps {
+                        unstash 'source-code'
+                        echo "WORKSPACE: ${WORKSPACE}"
+                        sh 'whoami'
+                        sh 'hostname'
+                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                            sh 'python3 -m bandit --exit-zero -r . -f custom -o bandit.out --msg-template "{abspath}:{line}: [{test_id}] {msg}"'
+                        }
+                        recordIssues tools: [pyLint(name: 'Bandit', pattern: 'bandit.out')], 
+                            qualityGates: [[threshold: 2, type: 'TOTAL', unstable: true], 
+                                           [threshold: 4, type: 'TOTAL', unstable: false]]
+                    }
+                }
+            }
+        }
+
+        stage('Rest') {
+            agent { label 'linux-agent' }
+            steps {
+                unstash 'source-code'
+                echo "WORKSPACE: ${WORKSPACE}"
+                sh 'whoami'
+                sh 'hostname'
+                catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                    sh '''
+                        echo "Iniciando API Flask en Linux..."
+                        flask --app app/api.py run --host=0.0.0.0 --port=9090 &
+                        sleep 5
+                        python3 -m pytest --junitxml=resultado-Rest.xml test/rest
+                    '''
+                }
+            }
+        }
+
+        stage('Coverage') {
+            agent { label 'linux-agent' }
+            steps {
+                unstash 'source-code'
+                echo "WORKSPACE: ${WORKSPACE}"
+                sh 'whoami'
+                sh 'hostname'
+                catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                    sh '''
+                        export PATH=/usr/local/bin:$PATH
+                        python3 -m coverage run --branch --source=app --omit=app/__init__.py,app/api.py -m pytest test/unit
+                        python3 -m coverage xml
+                    '''
+                }
+                cobertura coberturaReportFile: 'coverage.xml', onlyStable: false, 
+                          conditionalCoverageTargets: '90,0,80', 
+                          lineCoverageTargets: '95,0,85'
+            }
+        }
+
+        stage('Performance') {
+            agent { label 'windows-agent' }
+            steps {
+                unstash 'source-code'
+                echo "WORKSPACE: ${WORKSPACE}"
+                bat 'whoami'
+                bat 'hostname'
+                bat '''
+                    set PATH=C:\\Users\\Edgar\\AppData\\Local\\Programs\\Python\\Python313\\Scripts
+                    start cmd /c flask --app app\\api.py run
+                    "C:\\tmp\\apache-jmeter-5.6.3\\bin\\jmeter.bat" -n -t jmeter\\test.jmx -f -l flask.jtl 
+                '''
+                perfReport sourceDataFiles: 'flask.jtl'
+            }
+        }
+    } 
+}
